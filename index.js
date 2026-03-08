@@ -2,14 +2,17 @@ import "dotenv/config";
 import { Telegraf } from "telegraf";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
+import axios from "axios";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const allowedChatId = process.env.ALLOWED_CHAT_ID;
 const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
 const model = process.env.MODEL || "claude-sonnet-4-6";
+const tavilyApiKey = process.env.TAVILY_API_KEY;
 
 if (!token) throw new Error("Missing TELEGRAM_BOT_TOKEN");
 if (!anthropicApiKey) throw new Error("Missing ANTHROPIC_API_KEY");
+if (!tavilyApiKey) throw new Error("Missing TAVILY_API_KEY");
 
 const MEMORY_FILE = "/var/data/memory.json";
 
@@ -39,6 +42,7 @@ function writeMemory(memory) {
 
 function formatMemoryForPrompt() {
   const memory = readMemory();
+
   const permanent = memory.notes?.length
     ? memory.notes.map((n, i) => `${i + 1}. ${n}`).join("\n")
     : "None";
@@ -81,7 +85,7 @@ Current focus weights:
 - Telegram Assistant: 15%
 - Content Experiments: 20%
 
-Use Aaron's saved memory when it is relevant.
+Use Aaron's saved memory when relevant.
 Be concise, structured, practical, and decisive.
 
 ${memoryContext}
@@ -109,9 +113,44 @@ ${memoryContext}
   return text || "No response.";
 }
 
+async function tavilySearch(query) {
+  const response = await axios.post(
+    "https://api.tavily.com/search",
+    {
+      api_key: tavilyApiKey,
+      query,
+      search_depth: "advanced",
+      include_answer: true,
+      max_results: 5
+    },
+    {
+      headers: {
+        "Content-Type": "application/json"
+      }
+    }
+  );
+
+  return response.data;
+}
+
+function formatSearchResults(data) {
+  const answer = data.answer ? `Quick answer:\n${data.answer}\n\n` : "";
+
+  const results = (data.results || [])
+    .map((r, i) => {
+      const title = r.title || "No title";
+      const url = r.url || "No URL";
+      const content = r.content || "No summary";
+      return `${i + 1}. ${title}\n${url}\n${content}`;
+    })
+    .join("\n\n");
+
+  return `${answer}Sources:\n\n${results}`.trim();
+}
+
 bot.start((ctx) => {
   ctx.reply(
-    "Astor online.\nCommands: /ping /help /status /daily /ask /plan /think /remember /today /recall /clear /cleartoday"
+    "Astor online.\nCommands: /ping /help /status /daily /ask /plan /think /remember /today /recall /clear /cleartoday /search /research /agent /mission"
   );
 });
 
@@ -128,7 +167,11 @@ bot.command("help", (ctx) => {
 /today <daily note>
 /recall
 /clear
-/cleartoday`
+/cleartoday
+/search <query>
+/research <query>
+/agent <mission>
+/mission <objective>`
   );
 });
 
@@ -271,16 +314,64 @@ bot.command("cleartoday", (ctx) => {
   ctx.reply("Today's scratchpad cleared.");
 });
 
-bot.command("agent", async (ctx) => {
-  const text = ctx.message.text.replace(/^\/agent\s*/, "").trim();
+bot.command("search", async (ctx) => {
+  try {
+    const text = ctx.message.text.replace(/^\/search(@\w+)?\s*/, "").trim();
+    if (!text) return ctx.reply("Usage: /search <query>");
 
-  if (!text) {
-    return ctx.reply("Usage: /agent <mission>");
+    await ctx.reply("Searching...");
+    const data = await tavilySearch(text);
+    const formatted = formatSearchResults(data);
+
+    await ctx.reply(formatted.slice(0, 4000));
+  } catch (err) {
+    console.error("SEARCH ERROR:", err);
+    await ctx.reply("Astor hit an error on /search.");
   }
+});
 
-  await ctx.reply("Astor deploying agent...");
+bot.command("research", async (ctx) => {
+  try {
+    const text = ctx.message.text.replace(/^\/research(@\w+)?\s*/, "").trim();
+    if (!text) return ctx.reply("Usage: /research <query>");
 
-  const prompt = `
+    await ctx.reply("Researching...");
+    const data = await tavilySearch(text);
+
+    const sources = (data.results || [])
+      .map((r, i) => `${i + 1}. ${r.title}\n${r.url}\n${r.content}`)
+      .join("\n\n");
+
+    const prompt = `Research this topic using the live search findings below.
+
+Topic:
+${text}
+
+Search findings:
+${sources}
+
+Return:
+1. What matters most
+2. Best opportunities
+3. Risks
+4. Immediate next actions`;
+
+    const answer = await askClaude(prompt);
+    await ctx.reply(answer);
+  } catch (err) {
+    console.error("RESEARCH ERROR:", err);
+    await ctx.reply("Astor hit an error on /research.");
+  }
+});
+
+bot.command("agent", async (ctx) => {
+  try {
+    const text = ctx.message.text.replace(/^\/agent(@\w+)?\s*/, "").trim();
+    if (!text) return ctx.reply("Usage: /agent <mission>");
+
+    await ctx.reply("Astor deploying agent...");
+
+    const prompt = `
 You are Astor's autonomous planning system.
 
 Aaron wants an AI agent to execute this mission:
@@ -296,21 +387,22 @@ Return:
 5. Immediate next action
 `;
 
-  const answer = await askClaude(prompt);
-
-  await ctx.reply(answer);
+    const answer = await askClaude(prompt);
+    await ctx.reply(answer);
+  } catch (err) {
+    console.error("AGENT ERROR:", err);
+    await ctx.reply("Astor hit an error on /agent.");
+  }
 });
 
 bot.command("mission", async (ctx) => {
-  const text = ctx.message.text.replace(/^\/mission\s*/, "").trim();
+  try {
+    const text = ctx.message.text.replace(/^\/mission(@\w+)?\s*/, "").trim();
+    if (!text) return ctx.reply("Usage: /mission <objective>");
 
-  if (!text) {
-    return ctx.reply("Usage: /mission <objective>");
-  }
+    await ctx.reply("Astor initializing mission...");
 
-  await ctx.reply("Astor initializing mission...");
-
-  const prompt = `
+    const prompt = `
 Aaron is launching a mission:
 
 ${text}
@@ -331,9 +423,12 @@ Signals of Success
 Risks
 `;
 
-  const answer = await askClaude(prompt);
-
-  await ctx.reply(answer);
+    const answer = await askClaude(prompt);
+    await ctx.reply(answer);
+  } catch (err) {
+    console.error("MISSION ERROR:", err);
+    await ctx.reply("Astor hit an error on /mission.");
+  }
 });
 
 ensureMemoryFile();
