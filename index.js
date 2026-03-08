@@ -271,6 +271,36 @@ bot.command("cleartoday", (ctx) => {
   ctx.reply("Today's scratchpad cleared.");
 });
 
+bot.command("agent", async (ctx) => {
+  const text = ctx.message.text.replace(/^\/agent\s*/, "").trim();
+
+  if (!text) {
+    return ctx.reply("Usage: /agent <mission>");
+  }
+
+  await ctx.reply("Astor deploying agent...");
+
+  const prompt = `
+You are Astor's autonomous planning system.
+
+Aaron wants an AI agent to execute this mission:
+
+${text}
+
+Return:
+
+1. Mission definition
+2. Execution steps
+3. Tools required
+4. Risks
+5. Immediate next action
+`;
+
+  const answer = await askClaude(prompt);
+
+  await ctx.reply(answer);
+});
+
 ensureMemoryFile();
 
 bot.launch().then(() => console.log("Astor started."));
