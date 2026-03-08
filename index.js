@@ -3,6 +3,7 @@ import { Telegraf } from "telegraf";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
 import axios from "axios";
+import cron from "node-cron";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const allowedChatId = process.env.ALLOWED_CHAT_ID;
@@ -432,6 +433,45 @@ Risks
 });
 
 ensureMemoryFile();
+
+cron.schedule("0 */6 * * *", async () => {
+  console.log("Running job scout agent...");
+
+  try {
+    const data = await tavilySearch(
+      "remote operations jobs remote finance operations jobs hiring now"
+    );
+
+    const sources = (data.results || [])
+      .map((r, i) => `${i + 1}. ${r.title}\n${r.url}\n${r.content}`)
+      .join("\n\n");
+
+    const prompt = `
+Analyze these job listings and extract the most relevant opportunities
+for Aaron.
+
+Criteria:
+- Remote
+- Operations / Finance / RevOps
+- Likely paying $1000+ monthly
+
+Return the top 3 opportunities with:
+Title
+Company
+Why it is relevant
+Application link
+`;
+
+    const analysis = await askClaude(prompt + "\n\n" + sources);
+
+    await bot.telegram.sendMessage(
+      allowedChatId,
+      "🔎 Astor Job Radar\n\n" + analysis
+    );
+  } catch (err) {
+    console.error("JOB AGENT ERROR:", err);
+  }
+});
 
 bot.launch().then(() => console.log("Astor started."));
 
