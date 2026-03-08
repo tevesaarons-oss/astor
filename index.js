@@ -6,21 +6,48 @@ import fs from "fs";
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const allowedChatId = process.env.ALLOWED_CHAT_ID;
 const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
-const model = process.env.MODEL;
+const model = process.env.MODEL || "claude-sonnet-4-6";
 
-const MEMORY_FILE = "./memory.json";
+if (!token) throw new Error("Missing TELEGRAM_BOT_TOKEN");
+if (!anthropicApiKey) throw new Error("Missing ANTHROPIC_API_KEY");
+
+const MEMORY_FILE = "/var/data/memory.json";
+
+function ensureMemoryFile() {
+  try {
+    if (!fs.existsSync(MEMORY_FILE)) {
+      fs.writeFileSync(MEMORY_FILE, JSON.stringify({ notes: [], today: [] }, null, 2));
+    }
+  } catch (err) {
+    console.error("MEMORY INIT ERROR:", err);
+  }
+}
 
 function readMemory() {
   try {
+    ensureMemoryFile();
     const data = fs.readFileSync(MEMORY_FILE, "utf8");
     return JSON.parse(data);
   } catch {
-    return { notes: [] };
+    return { notes: [], today: [] };
   }
 }
 
 function writeMemory(memory) {
   fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2));
+}
+
+function formatMemoryForPrompt() {
+  const memory = readMemory();
+  const permanent = memory.notes?.length
+    ? memory.notes.map((n, i) => `${i + 1}. ${n}`).join("\n")
+    : "None";
+
+  const today = memory.today?.length
+    ? memory.today.map((n, i) => `${i + 1}. ${n}`).join("\n")
+    : "None";
+
+  return `Permanent memory:\n${permanent}\n\nToday's scratchpad:\n${today}`;
 }
 
 const bot = new Telegraf(token);
@@ -37,6 +64,8 @@ bot.use(async (ctx, next) => {
 });
 
 async function askClaude(userPrompt) {
+  const memoryContext = formatMemoryForPrompt();
+
   const systemPrompt = `
 You are Astor, Aaron's AI operator.
 
@@ -52,12 +81,15 @@ Current focus weights:
 - Telegram Assistant: 15%
 - Content Experiments: 20%
 
-Be concise, structured, and practical.
+Use Aaron's saved memory when it is relevant.
+Be concise, structured, practical, and decisive.
+
+${memoryContext}
 `;
 
   const response = await anthropic.messages.create({
-    model: model,
-    max_tokens: 700,
+    model,
+    max_tokens: 900,
     temperature: 0.7,
     system: systemPrompt,
     messages: [
@@ -79,7 +111,7 @@ Be concise, structured, and practical.
 
 bot.start((ctx) => {
   ctx.reply(
-    "Astor online.\nCommands: /ping /help /status /daily /ask /plan /think /remember /recall /clear"
+    "Astor online.\nCommands: /ping /help /status /daily /ask /plan /think /remember /today /recall /clear /cleartoday"
   );
 });
 
@@ -92,9 +124,11 @@ bot.command("help", (ctx) => {
 /ask <question>
 /plan <goal>
 /think <problem>
-/remember <note>
+/remember <permanent note>
+/today <daily note>
 /recall
-/clear`
+/clear
+/cleartoday`
   );
 });
 
@@ -130,20 +164,26 @@ bot.command("daily", (ctx) => {
 });
 
 bot.command("ask", async (ctx) => {
-  const text = ctx.message.text.replace(/^\/ask\s*/, "").trim();
-  if (!text) return ctx.reply("Usage: /ask <question>");
+  try {
+    const text = ctx.message.text.replace(/^\/ask(@\w+)?\s*/, "").trim();
+    if (!text) return ctx.reply("Usage: /ask <question>");
 
-  ctx.reply("Thinking...");
-  const answer = await askClaude(text);
-  ctx.reply(answer);
+    await ctx.reply("Thinking...");
+    const answer = await askClaude(text);
+    await ctx.reply(answer);
+  } catch (err) {
+    console.error("ASK ERROR:", err);
+    await ctx.reply("Astor hit an error on /ask.");
+  }
 });
 
 bot.command("plan", async (ctx) => {
-  const text = ctx.message.text.replace(/^\/plan\s*/, "").trim();
-  if (!text) return ctx.reply("Usage: /plan <goal>");
+  try {
+    const text = ctx.message.text.replace(/^\/plan(@\w+)?\s*/, "").trim();
+    if (!text) return ctx.reply("Usage: /plan <goal>");
 
-  ctx.reply("Planning...");
-  const prompt = `Create a practical plan for: ${text}
+    await ctx.reply("Planning...");
+    const prompt = `Create a practical plan for: ${text}
 
 Format:
 1. Objective
@@ -151,16 +191,21 @@ Format:
 3. Immediate next 3 steps
 4. Biggest risk
 5. What Aaron should ignore`;
-  const answer = await askClaude(prompt);
-  ctx.reply(answer);
+    const answer = await askClaude(prompt);
+    await ctx.reply(answer);
+  } catch (err) {
+    console.error("PLAN ERROR:", err);
+    await ctx.reply("Astor hit an error on /plan.");
+  }
 });
 
 bot.command("think", async (ctx) => {
-  const text = ctx.message.text.replace(/^\/think\s*/, "").trim();
-  if (!text) return ctx.reply("Usage: /think <problem>");
+  try {
+    const text = ctx.message.text.replace(/^\/think(@\w+)?\s*/, "").trim();
+    if (!text) return ctx.reply("Usage: /think <problem>");
 
-  ctx.reply("Thinking...");
-  const prompt = `Think through this problem:
+    await ctx.reply("Thinking...");
+    const prompt = `Think through this problem:
 
 ${text}
 
@@ -168,39 +213,65 @@ Provide:
 - What is really going on
 - Best move now
 - What to avoid`;
-  const answer = await askClaude(prompt);
-  ctx.reply(answer);
+    const answer = await askClaude(prompt);
+    await ctx.reply(answer);
+  } catch (err) {
+    console.error("THINK ERROR:", err);
+    await ctx.reply("Astor hit an error on /think.");
+  }
 });
 
 bot.command("remember", (ctx) => {
-  const text = ctx.message.text.replace(/^\/remember\s*/, "").trim();
-  if (!text) return ctx.reply("Usage: /remember <note>");
+  const text = ctx.message.text.replace(/^\/remember(@\w+)?\s*/, "").trim();
+  if (!text) return ctx.reply("Usage: /remember <permanent note>");
 
   const memory = readMemory();
   memory.notes.push(text);
   writeMemory(memory);
 
-  ctx.reply("Stored.");
+  ctx.reply("Stored in permanent memory.");
+});
+
+bot.command("today", (ctx) => {
+  const text = ctx.message.text.replace(/^\/today(@\w+)?\s*/, "").trim();
+  if (!text) return ctx.reply("Usage: /today <daily note>");
+
+  const memory = readMemory();
+  memory.today.push(text);
+  writeMemory(memory);
+
+  ctx.reply("Stored in today's scratchpad.");
 });
 
 bot.command("recall", (ctx) => {
   const memory = readMemory();
 
-  if (memory.notes.length === 0) {
-    return ctx.reply("Memory empty.");
-  }
+  const permanent = memory.notes?.length
+    ? memory.notes.map((note, i) => `${i + 1}. ${note}`).join("\n")
+    : "None";
 
-  const notes = memory.notes
-    .map((note, i) => `${i + 1}. ${note}`)
-    .join("\n");
+  const today = memory.today?.length
+    ? memory.today.map((note, i) => `${i + 1}. ${note}`).join("\n")
+    : "None";
 
-  ctx.reply(`Memory:\n\n${notes}`);
+  ctx.reply(`Permanent memory:\n${permanent}\n\nToday's scratchpad:\n${today}`);
 });
 
 bot.command("clear", (ctx) => {
-  writeMemory({ notes: [] });
-  ctx.reply("Memory cleared.");
+  const memory = readMemory();
+  memory.notes = [];
+  writeMemory(memory);
+  ctx.reply("Permanent memory cleared.");
 });
+
+bot.command("cleartoday", (ctx) => {
+  const memory = readMemory();
+  memory.today = [];
+  writeMemory(memory);
+  ctx.reply("Today's scratchpad cleared.");
+});
+
+ensureMemoryFile();
 
 bot.launch().then(() => console.log("Astor started."));
 
