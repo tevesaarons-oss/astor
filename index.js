@@ -301,6 +301,41 @@ Return:
   await ctx.reply(answer);
 });
 
+bot.command("mission", async (ctx) => {
+  const text = ctx.message.text.replace(/^\/mission\s*/, "").trim();
+
+  if (!text) {
+    return ctx.reply("Usage: /mission <objective>");
+  }
+
+  await ctx.reply("Astor initializing mission...");
+
+  const prompt = `
+Aaron is launching a mission:
+
+${text}
+
+You are an autonomous AI operator.
+
+Return:
+
+Mission Objective
+
+Execution Plan
+(step by step)
+
+Immediate Actions (first 3)
+
+Signals of Success
+
+Risks
+`;
+
+  const answer = await askClaude(prompt);
+
+  await ctx.reply(answer);
+});
+
 ensureMemoryFile();
 
 bot.launch().then(() => console.log("Astor started."));
