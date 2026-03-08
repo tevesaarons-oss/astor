@@ -18,7 +18,7 @@ if (!tavilyApiKey) throw new Error("Missing TAVILY_API_KEY");
 const MEMORY_FILE = "/var/data/memory.json";
 
 const DEFAULT_JOB_QUERY =
-  'remote operations manager OR "operations specialist" OR "business operations" OR "revenue operations" OR "finance operations" OR "fp&a" remote jobs hiring now';
+  'site:somewhere.com OR site:onlinejobs.ph OR site:boards.greenhouse.io OR site:jobs.ashbyhq.com OR site:lever.co ("prompt engineer" OR "AI automation" OR "AI operations" OR "AI agent" OR "AI workflow engineer" OR "business operations" OR "revenue operations" OR "finance operations" OR "FP&A" OR "executive assistant") remote hiring';
 
 function ensureMemoryFile() {
   try {
@@ -170,10 +170,11 @@ Aaron is looking for remote jobs.
 Use these priorities:
 - remote only
 - global if possible
-- operations / bizops / revops / finance ops / FP&A / similar
+- operations / bizops / revops / finance ops / FP&A / EA / AI automation / prompt roles
 - ideally $1000+ monthly or strong probability of that range
+- prioritize Somewhere.com, OnlineJobs.ph, Greenhouse, Ashby, Lever
 
-Using the search findings below, return a clean digest.
+Using the search findings below, return ONLY the TOP 5 strongest opportunities.
 
 Format exactly like this:
 
@@ -191,6 +192,87 @@ Link: ...
 Why relevant: ...
 Link: ...
 
+4. Job Title — Company
+Why relevant: ...
+Link: ...
+
+5. Job Title — Company
+Why relevant: ...
+Link: ...
+
+Then add:
+Best next move: ...
+
+Search findings:
+${sources}
+`;
+
+  const answer = await askClaude(prompt);
+  return answer;
+}
+
+async function runAIRadar() {
+  const query = `
+    site:ycombinator.com/jobs OR
+    site:wellfound.com OR
+    site:boards.greenhouse.io OR
+    site:jobs.ashbyhq.com OR
+    site:lever.co
+    ("prompt engineer" OR "AI automation" OR "AI operations" OR "AI agent" OR "AI workflow engineer" OR "LLM" OR "applied AI" OR "AI product" OR "AI specialist")
+    remote hiring
+  `.replace(/\s+/g, " ").trim();
+
+  const data = await tavilySearch(query);
+
+  const sources = (data.results || [])
+    .map(
+      (r, i) =>
+        `${i + 1}. ${r.title || "No title"}\n${r.url || "No URL"}\n${
+          r.content || "No summary"
+        }`
+    )
+    .join("\n\n");
+
+  const prompt = `
+Aaron wants early, high-signal AI job opportunities.
+
+Prioritize:
+- prompt engineer
+- AI automation
+- AI operations
+- AI workflow engineer
+- AI agent builder
+- LLM / applied AI roles
+- YC startups
+- strong AI startups
+- remote-first companies
+
+Return ONLY the TOP 5 strongest opportunities.
+
+Format exactly like this:
+
+AI Startup Radar
+
+1. Role — Company
+Why it matters: ...
+Link: ...
+
+2. Role — Company
+Why it matters: ...
+Link: ...
+
+3. Role — Company
+Why it matters: ...
+Link: ...
+
+4. Role — Company
+Why it matters: ...
+Link: ...
+
+5. Role — Company
+Why it matters: ...
+Link: ...
+
 Then add:
 Best next move: ...
 
@@ -204,7 +286,7 @@ ${sources}
 
 bot.start((ctx) => {
   ctx.reply(
-    "Astor online.\nCommands: /ping /help /status /daily /ask /plan /think /remember /today /recall /clear /cleartoday /search /research /agent /mission /jobscan /jobquery"
+    "Astor online.\nCommands: /ping /help /status /daily /ask /plan /think /remember /today /recall /clear /cleartoday /search /research /agent /mission /jobscan /jobquery /airadar"
   );
 });
 
@@ -227,7 +309,8 @@ bot.command("help", (ctx) => {
 /agent <mission>
 /mission <objective>
 /jobscan
-/jobquery`
+/jobquery
+/airadar`
   );
 });
 
@@ -516,6 +599,17 @@ bot.command("jobscan", async (ctx) => {
   }
 });
 
+bot.command("airadar", async (ctx) => {
+  try {
+    await ctx.reply("Scanning AI startup jobs...");
+    const result = await runAIRadar();
+    await ctx.reply(result.slice(0, 4000));
+  } catch (err) {
+    console.error("AIRADAR ERROR:", err);
+    await ctx.reply("Astor hit an error on /airadar.");
+  }
+});
+
 cron.schedule("0 */6 * * *", async () => {
   try {
     console.log("Running scheduled Job Agent...");
@@ -529,6 +623,22 @@ cron.schedule("0 */6 * * *", async () => {
     }
   } catch (err) {
     console.error("SCHEDULED JOB AGENT ERROR:", err);
+  }
+});
+
+cron.schedule("0 */8 * * *", async () => {
+  try {
+    console.log("Running AI Radar...");
+    const result = await runAIRadar();
+
+    if (allowedChatId) {
+      await bot.telegram.sendMessage(
+        allowedChatId,
+        `🤖 AI Startup Radar\n\n${result}`.slice(0, 4000)
+      );
+    }
+  } catch (err) {
+    console.error("AI RADAR ERROR:", err);
   }
 });
 
