@@ -17,10 +17,16 @@ if (!tavilyApiKey) throw new Error("Missing TAVILY_API_KEY");
 
 const MEMORY_FILE = "/var/data/memory.json";
 
+const DEFAULT_JOB_QUERY =
+  'remote operations manager OR "operations specialist" OR "business operations" OR "revenue operations" OR "finance operations" OR "fp&a" remote jobs hiring now';
+
 function ensureMemoryFile() {
   try {
     if (!fs.existsSync(MEMORY_FILE)) {
-      fs.writeFileSync(MEMORY_FILE, JSON.stringify({ notes: [], today: [] }, null, 2));
+      fs.writeFileSync(
+        MEMORY_FILE,
+        JSON.stringify({ notes: [], today: [] }, null, 2)
+      );
     }
   } catch (err) {
     console.error("MEMORY INIT ERROR:", err);
@@ -53,6 +59,17 @@ function formatMemoryForPrompt() {
     : "None";
 
   return `Permanent memory:\n${permanent}\n\nToday's scratchpad:\n${today}`;
+}
+
+function getJobQuery() {
+  const memory = readMemory();
+  const custom = memory.notes.find((n) =>
+    n.toLowerCase().startsWith("job query:")
+  );
+  if (custom) {
+    return custom.replace(/^job query:\s*/i, "").trim();
+  }
+  return DEFAULT_JOB_QUERY;
 }
 
 const bot = new Telegraf(token);
@@ -122,36 +139,72 @@ async function tavilySearch(query) {
       query,
       search_depth: "advanced",
       include_answer: true,
-      max_results: 5
+      max_results: 8,
     },
     {
       headers: {
-        "Content-Type": "application/json"
-      }
+        "Content-Type": "application/json",
+      },
     }
   );
 
   return response.data;
 }
 
-function formatSearchResults(data) {
-  const answer = data.answer ? `Quick answer:\n${data.answer}\n\n` : "";
+async function runJobAgent() {
+  const query = getJobQuery();
+  const data = await tavilySearch(query);
 
-  const results = (data.results || [])
-    .map((r, i) => {
-      const title = r.title || "No title";
-      const url = r.url || "No URL";
-      const content = r.content || "No summary";
-      return `${i + 1}. ${title}\n${url}\n${content}`;
-    })
+  const sources = (data.results || [])
+    .map(
+      (r, i) =>
+        `${i + 1}. ${r.title || "No title"}\n${r.url || "No URL"}\n${
+          r.content || "No summary"
+        }`
+    )
     .join("\n\n");
 
-  return `${answer}Sources:\n\n${results}`.trim();
+  const prompt = `
+Aaron is looking for remote jobs.
+
+Use these priorities:
+- remote only
+- global if possible
+- operations / bizops / revops / finance ops / FP&A / similar
+- ideally $1000+ monthly or strong probability of that range
+
+Using the search findings below, return a clean digest.
+
+Format exactly like this:
+
+Astor Job Radar
+
+1. Job Title — Company
+Why relevant: ...
+Link: ...
+
+2. Job Title — Company
+Why relevant: ...
+Link: ...
+
+3. Job Title — Company
+Why relevant: ...
+Link: ...
+
+Then add:
+Best next move: ...
+
+Search findings:
+${sources}
+`;
+
+  const answer = await askClaude(prompt);
+  return answer;
 }
 
 bot.start((ctx) => {
   ctx.reply(
-    "Astor online.\nCommands: /ping /help /status /daily /ask /plan /think /remember /today /recall /clear /cleartoday /search /research /agent /mission"
+    "Astor online.\nCommands: /ping /help /status /daily /ask /plan /think /remember /today /recall /clear /cleartoday /search /research /agent /mission /jobscan /jobquery"
   );
 });
 
@@ -172,7 +225,9 @@ bot.command("help", (ctx) => {
 /search <query>
 /research <query>
 /agent <mission>
-/mission <objective>`
+/mission <objective>
+/jobscan
+/jobquery`
   );
 });
 
@@ -322,9 +377,18 @@ bot.command("search", async (ctx) => {
 
     await ctx.reply("Searching...");
     const data = await tavilySearch(text);
-    const formatted = formatSearchResults(data);
 
-    await ctx.reply(formatted.slice(0, 4000));
+    const answer = data.answer ? `Quick answer:\n${data.answer}\n\n` : "";
+    const results = (data.results || [])
+      .map(
+        (r, i) =>
+          `${i + 1}. ${r.title || "No title"}\n${r.url || "No URL"}\n${
+            r.content || "No summary"
+          }`
+      )
+      .join("\n\n");
+
+    await ctx.reply((answer + "Sources:\n\n" + results).slice(0, 4000));
   } catch (err) {
     console.error("SEARCH ERROR:", err);
     await ctx.reply("Astor hit an error on /search.");
@@ -340,7 +404,12 @@ bot.command("research", async (ctx) => {
     const data = await tavilySearch(text);
 
     const sources = (data.results || [])
-      .map((r, i) => `${i + 1}. ${r.title}\n${r.url}\n${r.content}`)
+      .map(
+        (r, i) =>
+          `${i + 1}. ${r.title || "No title"}\n${r.url || "No URL"}\n${
+            r.content || "No summary"
+          }`
+      )
       .join("\n\n");
 
     const prompt = `Research this topic using the live search findings below.
@@ -432,46 +501,38 @@ Risks
   }
 });
 
-ensureMemoryFile();
+bot.command("jobquery", (ctx) => {
+  ctx.reply(`Current job query:\n\n${getJobQuery()}`);
+});
 
-cron.schedule("0 */6 * * *", async () => {
-  console.log("Running job scout agent...");
-
+bot.command("jobscan", async (ctx) => {
   try {
-    const data = await tavilySearch(
-      "remote operations jobs remote finance operations jobs hiring now"
-    );
-
-    const sources = (data.results || [])
-      .map((r, i) => `${i + 1}. ${r.title}\n${r.url}\n${r.content}`)
-      .join("\n\n");
-
-    const prompt = `
-Analyze these job listings and extract the most relevant opportunities
-for Aaron.
-
-Criteria:
-- Remote
-- Operations / Finance / RevOps
-- Likely paying $1000+ monthly
-
-Return the top 3 opportunities with:
-Title
-Company
-Why it is relevant
-Application link
-`;
-
-    const analysis = await askClaude(prompt + "\n\n" + sources);
-
-    await bot.telegram.sendMessage(
-      allowedChatId,
-      "🔎 Astor Job Radar\n\n" + analysis
-    );
+    await ctx.reply("Running Astor Job Radar...");
+    const result = await runJobAgent();
+    await ctx.reply(result.slice(0, 4000));
   } catch (err) {
-    console.error("JOB AGENT ERROR:", err);
+    console.error("JOBSCAN ERROR:", err);
+    await ctx.reply("Astor hit an error on /jobscan.");
   }
 });
+
+cron.schedule("0 */6 * * *", async () => {
+  try {
+    console.log("Running scheduled Job Agent...");
+    const result = await runJobAgent();
+
+    if (allowedChatId) {
+      await bot.telegram.sendMessage(
+        allowedChatId,
+        `🔎 Astor Job Radar\n\n${result}`.slice(0, 4000)
+      );
+    }
+  } catch (err) {
+    console.error("SCHEDULED JOB AGENT ERROR:", err);
+  }
+});
+
+ensureMemoryFile();
 
 bot.launch().then(() => console.log("Astor started."));
 
