@@ -155,14 +155,15 @@ async function runJobAgent() {
   const query = getJobQuery();
   const data = await tavilySearch(query);
 
-  const sources = (data.results || [])
-    .map(
-      (r, i) =>
-        `${i + 1}. ${r.title || "No title"}\n${r.url || "No URL"}\n${
-          r.content || "No summary"
-        }`
-    )
-    .join("\n\n");
+const sources = (data.results || [])
+  .filter(r => !r.url?.includes("remoterocketship.com"))
+  .map(
+    (r, i) =>
+      `${i + 1}. ${r.title || "No title"}\n${r.url || "No URL"}\n${
+        r.content || "No summary"
+      }`
+  )
+  .join("\n\n");
 
   const prompt = `
 Aaron is looking for remote jobs.
@@ -224,7 +225,8 @@ async function runAIRadar() {
 
   const data = await tavilySearch(query);
 
-  const sources = (data.results || [])
+const sources = (data.results || [])
+  .filter(r => !r.url?.includes("remoterocketship.com"))
     .map(
       (r, i) =>
         `${i + 1}. ${r.title || "No title"}\n${r.url || "No URL"}\n${
